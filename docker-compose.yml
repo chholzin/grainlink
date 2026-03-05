@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  grainlink:
+    build: .
+    image: grainlink:latest
+    container_name: grainlink
+    restart: unless-stopped
+
+    # MCP over stdio – Claude Desktop connects via docker exec
+    stdin_open: true
+    tty: false
+
+    volumes:
+      # Lege diese Pfade auf deiner Synology an:
+      # /volume1/docker/grainlink/data  → Datenbank
+      # /volume1/docker/grainlink/logs  → Logs
+      - /volume1/docker/grainlink/data:/data
+      - /volume1/docker/grainlink/logs:/logs
+
+    environment:
+      - DB_PATH=/data/memory.db
+      - LOG_PATH=/logs/memory.log
+      - EMBED_MODEL=all-MiniLM-L6-v2
+      - TOP_K=5
+
+    # Ressourcenlimits für den Celeron
+    # Mit 8GB RAM kannst du das großzügiger setzen
+    deploy:
+      resources:
+        limits:
+          memory: 1500M   # Modell ~400MB + Overhead
+        reservations:
+          memory: 512M

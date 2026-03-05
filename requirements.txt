@@ -1,0 +1,4 @@
+mcp>=1.0.0
+sentence-transformers>=2.7.0
+numpy>=1.26.0
+torch>=2.2.0 --index-url https://download.pytorch.org/whl/cpu
