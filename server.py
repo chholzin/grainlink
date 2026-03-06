@@ -69,11 +69,11 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
-log.info("Loading embedding model '%s' ...", MODEL_NAME)
-embed_model = SentenceTransformer(MODEL_NAME)
-log.info("Model loaded.")
+# Model is loaded in main() AFTER MCP handshake is ready — fixes timing issue
+embed_model = None
 
 def embed(text: str) -> bytes:
+    assert embed_model is not None, "Model not loaded yet"
     vec = embed_model.encode(text, normalize_embeddings=True)
     return vec.astype(np.float32).tobytes()
 
@@ -321,6 +321,12 @@ async def main():
     conn = get_conn()
     init_db(conn)
     conn.close()
+    # Load embedding model BEFORE opening stdio — prevents handshake timing issues
+    global embed_model
+    log.info("Loading embedding model '%s' ...", MODEL_NAME)
+    embed_model = SentenceTransformer(MODEL_NAME)
+    log.info("✅ Model loaded.")
+
     log.info("⛓ GRAINLINK starting — Every thought. Every agent. One link.")
     async with stdio_server() as (read, write):
         await app.run(read, write, app.create_initialization_options())

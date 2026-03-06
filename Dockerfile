@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps – CPU-only torch keeps image size manageable (~1.5GB)
+# Python deps – CPU-only torch
 COPY requirements.txt .
 RUN pip install --no-cache-dir \
     mcp>=1.0.0 \
@@ -19,19 +19,23 @@ RUN pip install --no-cache-dir \
     && pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cpu
 
-# Pre-download the embedding model into the image
-# so first start doesn't need internet access
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+# Copy pre-downloaded model from host into image
+# → Run download script first (see SETUP.md)
+COPY model_cache/ /app/model_cache/
 
 COPY server.py .
 
-# Volumes for persistent data & logs
 VOLUME ["/data", "/logs"]
 
 ENV DB_PATH=/data/memory.db \
     LOG_PATH=/logs/memory.log \
     EMBED_MODEL=all-MiniLM-L6-v2 \
-    TOP_K=5
+    TOP_K=5 \
+    TRANSFORMERS_CACHE=/app/model_cache \
+    HF_HOME=/app/model_cache \
+    SENTENCE_TRANSFORMERS_HOME=/app/model_cache \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    HF_HUB_OFFLINE=1
 
-# MCP servers communicate over stdio – no exposed port needed
 CMD ["python", "server.py"]
