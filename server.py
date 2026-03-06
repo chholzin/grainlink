@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp import types
@@ -68,19 +67,52 @@ def get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
-# ── Embedding ─────────────────────────────────────────────────────────────────
-# Model is loaded in main() AFTER MCP handshake is ready — fixes timing issue
-embed_model = None
+# ── Embedding (ONNX Runtime — no PyTorch, ~150MB image) ──────────────────────
+import json as _json
+from tokenizers import Tokenizer
+import onnxruntime as ort
+
+_tokenizer: Tokenizer | None = None
+_session:   ort.InferenceSession | None = None
+
+def _load_model():
+    global _tokenizer, _session
+    model_dir = Path(os.getenv("SENTENCE_TRANSFORMERS_HOME", "/app/model_cache")) / MODEL_NAME
+    _tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+    _tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", length=128)
+    _tokenizer.enable_truncation(max_length=128)
+    _session = ort.InferenceSession(
+        str(model_dir / "onnx" / "model.onnx"),
+        providers=["CPUExecutionProvider"]
+    )
+    log.info("✅ ONNX model loaded from %s", model_dir)
+
+def _mean_pool(token_embeddings: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
+    mask = attention_mask[..., np.newaxis].astype(float)
+    summed = (token_embeddings * mask).sum(axis=1)
+    counts = mask.sum(axis=1).clip(min=1e-9)
+    return summed / counts
 
 def embed(text: str) -> bytes:
-    assert embed_model is not None, "Model not loaded yet"
-    vec = embed_model.encode(text, normalize_embeddings=True)
-    return vec.astype(np.float32).tobytes()
+    assert _session is not None, "Model not loaded"
+    enc = _tokenizer.encode(text)
+    input_ids      = np.array([enc.ids],               dtype=np.int64)
+    attention_mask = np.array([enc.attention_mask],     dtype=np.int64)
+    token_type_ids = np.zeros_like(input_ids)
+    outputs = _session.run(None, {
+        "input_ids":      input_ids,
+        "attention_mask": attention_mask,
+        "token_type_ids": token_type_ids,
+    })
+    pooled = _mean_pool(outputs[0], attention_mask)
+    norm   = np.linalg.norm(pooled, axis=1, keepdims=True)
+    vec    = (pooled / norm.clip(min=1e-9)).astype(np.float32)
+    return vec[0].tobytes()
 
 def cosine_similarity(a: bytes, b: bytes) -> float:
     va = np.frombuffer(a, dtype=np.float32)
     vb = np.frombuffer(b, dtype=np.float32)
-    return float(np.dot(va, vb))  # already L2-normalised
+    return float(np.dot(va, vb))
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
 app = Server("grainlink")
@@ -321,11 +353,9 @@ async def main():
     conn = get_conn()
     init_db(conn)
     conn.close()
-    # Load embedding model BEFORE opening stdio — prevents handshake timing issues
-    global embed_model
-    log.info("Loading embedding model '%s' ...", MODEL_NAME)
-    embed_model = SentenceTransformer(MODEL_NAME)
-    log.info("✅ Model loaded.")
+    # Load ONNX model BEFORE opening stdio — fast start, no HuggingFace requests
+    log.info("Loading ONNX embedding model '%s' ...", MODEL_NAME)
+    _load_model()
 
     log.info("⛓ GRAINLINK starting — Every thought. Every agent. One link.")
     async with stdio_server() as (read, write):
